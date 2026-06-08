@@ -1,111 +1,123 @@
 """
 Xero Cash Position Agent
-Pulls bank balances from each Xero org and writes a daily record to Notion.
-Schedule via launchd at 8:00 AM daily.
+Pulls bank account balances from all connected Xero orgs and writes
+a daily snapshot to the Notion Cash Position Daily database.
+
+Schedule: 8:00 AM daily via launchd
 """
-import os, sys
+import os, sys, json, pathlib
 from datetime import date
 from dotenv import load_dotenv
 from notion_client import Client
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from config import NOTION_DB, XERO_ORGS
+ROOT = pathlib.Path(__file__).parent.parent
+sys.path.insert(0, str(ROOT))
+load_dotenv(ROOT / ".env")
 
-load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
+from config import NOTION_DB, CASH_FIELDS, XERO_ORG_MAP
+from agents.xero_auth import ensure_valid_token, get_tenants
 
+TENANT_PATH = pathlib.Path(__file__).parent / "xero_tenants.json"
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
-XERO_CLIENT_ID     = os.getenv("XERO_CLIENT_ID")
-XERO_CLIENT_SECRET = os.getenv("XERO_CLIENT_SECRET")
 
 
-def get_xero_balances():
-    """
-    Returns dict: { notion_field_name: balance_float }
-    Uses xero-python SDK with stored OAuth tokens.
-    Token refresh logic goes here — store tokens in agents/xero_tokens.json.
-    """
+def get_bank_balance(access_token: str, tenant_id: str, org_name: str) -> float:
+    """Fetch total bank balance for a Xero tenant using Reports API."""
+    import requests
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Xero-Tenant-Id": tenant_id,
+        "Accept": "application/json",
+    }
     try:
-        from xero_python.api_client import ApiClient
-        from xero_python.api_client.configuration import Configuration
-        from xero_python.api_client.oauth2 import OAuth2Token
-        from xero_python.accounting import AccountingApi
-        import json, pathlib
+        resp = requests.get(
+            "https://api.xero.com/api.xro/2.0/Reports/BankSummary",
+            headers=headers, timeout=15
+        )
+        resp.raise_for_status()
+        data = resp.json()
 
-        token_path = pathlib.Path(__file__).parent / "xero_tokens.json"
-        if not token_path.exists():
-            print("ERROR: xero_tokens.json not found. Run xero_auth.py first.")
-            return {}
+        total = 0.0
+        reports = data.get("Reports", [])
+        for report in reports:
+            for row in report.get("Rows", []):
+                for r in row.get("Rows", []):
+                    cells = r.get("Cells", [])
+                    if len(cells) >= 3:
+                        try:
+                            # Balance is typically the 3rd cell
+                            val = cells[2].get("Value", "0").replace(",", "")
+                            total += float(val or 0)
+                        except (ValueError, AttributeError):
+                            pass
+        print(f"  {org_name}: ${total:,.2f}")
+        return round(total, 2)
 
-        tokens = json.loads(token_path.read_text())
+    except requests.HTTPError as e:
+        if e.response.status_code == 403:
+            print(f"  {org_name}: no access (403) — skipping")
+        else:
+            print(f"  {org_name}: HTTP {e.response.status_code} — skipping")
+        return 0.0
+    except Exception as e:
+        print(f"  {org_name}: ERROR {e} — skipping")
+        return 0.0
 
-        config = Configuration()
-        api_client = ApiClient(configuration=config,
-                               oauth2_token=OAuth2Token(
-                                   client_id=XERO_CLIENT_ID,
-                                   client_secret=XERO_CLIENT_SECRET))
-        api_client.set_oauth2_token(tokens["access_token"])
-        accounting = AccountingApi(api_client)
 
-        balances = {}
-        for org in XERO_ORGS:
-            if not org["id"]:
-                continue
-            try:
-                tenant_id = org["id"]
-                accounts = accounting.get_accounts(
-                    xero_tenant_id=tenant_id,
-                    where='Type=="BANK" AND Status=="ACTIVE"'
-                )
-                total = sum(
-                    (a.balance or 0)
-                    for a in (accounts.accounts or [])
-                )
-                balances[org["short"]] = round(total, 2)
-                print(f"  {org['name']}: ${total:,.2f}")
-            except Exception as e:
-                print(f"  WARN: could not fetch {org['name']}: {e}")
-                balances[org["short"]] = 0.0
-
-        return balances
-
-    except ImportError:
-        print("xero-python not installed. pip install xero-python")
+def fetch_all_balances() -> dict:
+    """Returns { notion_field_name: balance } for all orgs."""
+    if not TENANT_PATH.exists():
+        print("ERROR: xero_tenants.json not found. Run: python3 agents/xero_auth.py")
         return {}
+
+    access_token = ensure_valid_token()
+    tenants = json.loads(TENANT_PATH.read_text())
+
+    balances = {}
+    for org_name, tenant_id in tenants.items():
+        notion_field = XERO_ORG_MAP.get(org_name)
+        if not notion_field:
+            print(f"  {org_name}: no Notion field mapping — skipping")
+            continue
+        balance = get_bank_balance(access_token, tenant_id, org_name)
+        balances[notion_field] = balance
+
+    return balances
 
 
 def write_to_notion(balances: dict):
     notion = Client(auth=NOTION_TOKEN)
     today  = str(date.today())
-    total  = sum(balances.values())
+    total  = round(sum(balances.values()), 2)
 
-    # Check if today's record already exists
     existing = notion.databases.query(
         database_id=NOTION_DB["cash_position"],
         filter={"property": "Date", "title": {"equals": today}}
     )
 
     props = {
-        "Date":       {"title": [{"text": {"content": today}}]},
+        "Date":       {"title":  [{"text": {"content": today}}]},
         "Total Cash": {"number": total},
-        **{k: {"number": v} for k, v in balances.items()}
+        **{k: {"number": v} for k, v in balances.items()},
     }
 
     if existing["results"]:
-        page_id = existing["results"][0]["id"]
-        notion.pages.update(page_id, properties=props)
-        print(f"Updated existing Notion record for {today}")
+        notion.pages.update(existing["results"][0]["id"], properties=props)
+        print(f"Updated cash position for {today} — Total: ${total:,.2f}")
     else:
         notion.pages.create(
             parent={"database_id": NOTION_DB["cash_position"]},
             properties=props
         )
-        print(f"Created Notion record for {today} — Total: ${total:,.2f}")
+        print(f"Created cash position for {today} — Total: ${total:,.2f}")
 
 
 if __name__ == "__main__":
-    print(f"Xero Cash Agent — {date.today()}")
-    balances = get_xero_balances()
+    print(f"=== Xero Cash Agent — {date.today()} ===")
+    balances = fetch_all_balances()
     if balances:
         write_to_notion(balances)
+        print("Done.")
     else:
-        print("No balances retrieved. Check Xero credentials.")
+        print("No balances fetched. Check Xero credentials.")
+        sys.exit(1)

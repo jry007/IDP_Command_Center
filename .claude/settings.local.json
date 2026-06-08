@@ -17,7 +17,8 @@
       "Bash(ssh -T git@github.com)",
       "Bash(ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null && ssh -T git@github.com 2>&1)",
       "Bash(git push *)",
-      "mcp__80b272cb-f5ef-4f3e-a180-248771f4b42a__notion-fetch"
+      "mcp__80b272cb-f5ef-4f3e-a180-248771f4b42a__notion-fetch",
+      "Bash(chmod +x /Users/yostenterprises/IDP_Command_Center/launchd/install_launchd.sh /Users/yostenterprises/IDP_Command_Center/launchd/uninstall_launchd.sh)"
     ]
   }
 }

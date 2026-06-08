@@ -1,79 +1,77 @@
 """
 HGI Night Audit Agent
-- Checks Gmail for night audit PDF attachments
-- Parses metrics using Claude API
-- Writes daily record to Notion HGI Daily Metrics DB
-Schedule via launchd at 7:45 AM daily.
+- Searches Gmail for night audit PDF (subject contains "night audit")
+- Parses KPIs using Claude API (document support)
+- Writes to Notion HGI Daily Metrics database
+
+Schedule: 7:45 AM daily via launchd
 """
-import os, sys, base64, json, re
+import os, sys, json, re, base64, pathlib
 from datetime import date, timedelta
 from dotenv import load_dotenv
 from notion_client import Client
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+ROOT = pathlib.Path(__file__).parent.parent
+sys.path.insert(0, str(ROOT))
+load_dotenv(ROOT / ".env")
+
 from config import NOTION_DB
+from agents.gmail_auth import get_gmail_service, search_messages, get_message, get_attachment, get_message_header, iter_attachments
 
-load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
-
-NOTION_TOKEN       = os.getenv("NOTION_TOKEN")
-ANTHROPIC_API_KEY  = os.getenv("ANTHROPIC_API_KEY")
-GMAIL_CREDS_PATH   = os.getenv("GMAIL_CREDENTIALS_PATH", "credentials/gmail_credentials.json")
+NOTION_TOKEN      = os.getenv("NOTION_TOKEN")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
 
-def get_gmail_service():
-    from google.oauth2.credentials import Credentials
-    from google_auth_oauthlib.flow import InstalledAppFlow
-    from google.auth.transport.requests import Request
-    from googleapiclient.discovery import build
-    import pathlib
-
-    SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
-    token_path = pathlib.Path(__file__).parent / "gmail_token.json"
-    creds = None
-
-    if token_path.exists():
-        creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(GMAIL_CREDS_PATH, SCOPES)
-            creds = flow.run_local_server(port=0)
-        token_path.write_text(creds.to_json())
-
-    return build("gmail", "v1", credentials=creds)
+def find_audit_pdf(service, target_date: str) -> tuple[bytes, str] | tuple[None, None]:
+    """Returns (pdf_bytes, filename) or (None, None)."""
+    # Try targeted search first
+    queries = [
+        f'subject:"night audit" has:attachment filename:pdf after:{target_date}',
+        'subject:"night audit" has:attachment filename:pdf newer_than:2d',
+        'from:@hilton has:attachment filename:pdf newer_than:2d',
+        'subject:"daily report" has:attachment filename:pdf newer_than:1d',
+    ]
+    for q in queries:
+        messages = search_messages(service, q, max_results=5)
+        for msg_ref in messages:
+            msg = get_message(service, msg_ref["id"])
+            for filename, att_id in iter_attachments(msg):
+                if filename.lower().endswith(".pdf"):
+                    pdf_bytes = get_attachment(service, msg_ref["id"], att_id)
+                    print(f"  Found: {filename} ({len(pdf_bytes):,} bytes)")
+                    return pdf_bytes, filename
+    return None, None
 
 
-def fetch_audit_pdf(gmail, target_date: str) -> bytes | None:
-    """Search Gmail for night audit PDF for target_date (YYYY-MM-DD)."""
-    query = f'subject:"night audit" has:attachment filename:pdf after:{target_date} before:{target_date}'
-    results = gmail.users().messages().list(userId="me", q=query, maxResults=5).execute()
-    messages = results.get("messages", [])
-
-    if not messages:
-        # Try broader search
-        query = 'subject:"night audit" has:attachment filename:pdf'
-        results = gmail.users().messages().list(userId="me", q=query, maxResults=3).execute()
-        messages = results.get("messages", [])
-
-    for msg_ref in messages:
-        msg = gmail.users().messages().get(userId="me", id=msg_ref["id"]).execute()
-        for part in msg.get("payload", {}).get("parts", []):
-            if part.get("filename", "").lower().endswith(".pdf"):
-                att_id = part["body"].get("attachmentId")
-                if att_id:
-                    att = gmail.users().messages().attachments().get(
-                        userId="me", messageId=msg_ref["id"], id=att_id).execute()
-                    return base64.urlsafe_b64decode(att["data"])
-    return None
+def extract_text_from_pdf(pdf_bytes: bytes) -> str:
+    try:
+        import PyPDF2, io
+        reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
+        return "\n".join(page.extract_text() or "" for page in reader.pages)
+    except Exception:
+        return ""
 
 
-def parse_with_claude(pdf_bytes: bytes) -> dict:
-    """Use Claude to extract metrics from the night audit PDF."""
-    import anthropic, base64
+def parse_with_claude(pdf_bytes: bytes, report_date: str) -> dict:
+    import anthropic
 
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     pdf_b64 = base64.standard_b64encode(pdf_bytes).decode()
+
+    prompt = f"""You are parsing a hotel night audit report for {report_date}.
+Extract these metrics and return ONLY a valid JSON object (no markdown, no explanation):
+{{
+  "date": "{report_date}",
+  "occupancy_pct": <decimal 0.00-1.00, e.g. 0.85 for 85%>,
+  "rooms_sold": <integer>,
+  "adr": <average daily rate in dollars, float>,
+  "rev_par": <revenue per available room in dollars, float>,
+  "room_revenue": <total room revenue in dollars, float>,
+  "fb_revenue": <food and beverage revenue in dollars, float>,
+  "total_revenue": <total revenue in dollars, float>,
+  "notes": "<any notable items, or empty string>"
+}}
+Use null for any metric you cannot find. Do not include any text outside the JSON object."""
 
     response = client.messages.create(
         model="claude-opus-4-8",
@@ -83,35 +81,22 @@ def parse_with_claude(pdf_bytes: bytes) -> dict:
             "content": [
                 {
                     "type": "document",
-                    "source": {"type": "base64", "media_type": "application/pdf", "data": pdf_b64}
+                    "source": {
+                        "type": "base64",
+                        "media_type": "application/pdf",
+                        "data": pdf_b64,
+                    }
                 },
-                {
-                    "type": "text",
-                    "text": """Extract the following metrics from this hotel night audit report.
-Return ONLY a valid JSON object with these exact keys (use null if not found):
-{
-  "date": "YYYY-MM-DD",
-  "occupancy_pct": 0.00,
-  "rooms_sold": 0,
-  "adr": 0.00,
-  "rev_par": 0.00,
-  "room_revenue": 0.00,
-  "fb_revenue": 0.00,
-  "total_revenue": 0.00,
-  "notes": ""
-}
-occupancy_pct should be a decimal (e.g. 0.85 for 85%). Do not include any text outside the JSON."""
-                }
+                {"type": "text", "text": prompt}
             ]
         }]
     )
 
     text = response.content[0].text.strip()
-    # Extract JSON if wrapped in markdown code block
     match = re.search(r'\{.*\}', text, re.DOTALL)
     if match:
         return json.loads(match.group())
-    return {}
+    raise ValueError(f"No JSON in Claude response: {text[:200]}")
 
 
 def write_to_notion(metrics: dict):
@@ -123,20 +108,21 @@ def write_to_notion(metrics: dict):
         filter={"property": "Date", "title": {"equals": report_date}}
     )
 
+    def num(key):
+        v = metrics.get(key)
+        return {"number": v} if v is not None else {"number": None}
+
     props = {
-        "Date":          {"title": [{"text": {"content": report_date}}]},
-        "Occupancy %":   {"number": metrics.get("occupancy_pct")},
-        "Rooms Sold":    {"number": metrics.get("rooms_sold")},
-        "ADR":           {"number": metrics.get("adr")},
-        "RevPAR":        {"number": metrics.get("rev_par")},
-        "Room Revenue":  {"number": metrics.get("room_revenue")},
-        "F&B Revenue":   {"number": metrics.get("fb_revenue")},
-        "Total Revenue": {"number": metrics.get("total_revenue")},
+        "Date":          {"title":     [{"text": {"content": report_date}}]},
+        "Occupancy %":   num("occupancy_pct"),
+        "Rooms Sold":    num("rooms_sold"),
+        "ADR":           num("adr"),
+        "RevPAR":        num("rev_par"),
+        "Room Revenue":  num("room_revenue"),
+        "F&B Revenue":   num("fb_revenue"),
+        "Total Revenue": num("total_revenue"),
         "Notes":         {"rich_text": [{"text": {"content": metrics.get("notes") or ""}}]},
     }
-    # Remove null values
-    props = {k: v for k, v in props.items()
-             if not (isinstance(v, dict) and v.get("number") is None)}
 
     if existing["results"]:
         notion.pages.update(existing["results"][0]["id"], properties=props)
@@ -146,28 +132,32 @@ def write_to_notion(metrics: dict):
             parent={"database_id": NOTION_DB["hgi_daily_metrics"]},
             properties=props
         )
-        print(f"Created HGI record for {report_date} — Occ: {metrics.get('occupancy_pct',0)*100:.1f}%")
+
+    occ = (metrics.get("occupancy_pct") or 0) * 100
+    adr = metrics.get("adr") or 0
+    rev = metrics.get("rev_par") or 0
+    print(f"HGI {report_date} — Occ: {occ:.1f}%  ADR: ${adr:.2f}  RevPAR: ${rev:.2f}")
 
 
 if __name__ == "__main__":
     yesterday = str(date.today() - timedelta(days=1))
-    print(f"HGI Audit Agent — processing {yesterday}")
+    print(f"=== HGI Audit Agent — processing {yesterday} ===")
 
     try:
-        gmail   = get_gmail_service()
-        pdf     = fetch_audit_pdf(gmail, yesterday)
-        if not pdf:
-            print(f"No night audit PDF found for {yesterday}")
+        gmail = get_gmail_service()
+        pdf_bytes, filename = find_audit_pdf(gmail, yesterday)
+
+        if not pdf_bytes:
+            print(f"No night audit PDF found for {yesterday}. Nothing written.")
             sys.exit(0)
-        print(f"Found PDF ({len(pdf):,} bytes). Parsing with Claude...")
-        metrics = parse_with_claude(pdf)
-        if not metrics:
-            print("Could not parse metrics from PDF.")
-            sys.exit(1)
-        print(f"Parsed: Occ={metrics.get('occupancy_pct',0)*100:.1f}% "
-              f"ADR=${metrics.get('adr',0):.2f} "
-              f"RevPAR=${metrics.get('rev_par',0):.2f}")
+
+        print(f"Parsing with Claude...")
+        metrics = parse_with_claude(pdf_bytes, yesterday)
+
         write_to_notion(metrics)
+        print("Done.")
+
     except Exception as e:
         print(f"ERROR: {e}")
+        import traceback; traceback.print_exc()
         sys.exit(1)
