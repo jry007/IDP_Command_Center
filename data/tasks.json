@@ -1,0 +1,14 @@
+[
+  {
+    "id": "t1",
+    "title": "Example Task: Review agent output",
+    "goal_id": "g1",
+    "type": "AI Agent",
+    "status": "Pending",
+    "priority": "High",
+    "created": "2026-06-08",
+    "due_date": "2026-06-15",
+    "agent": "Claude",
+    "notes": "Check outputs from the latest automation run."
+  }
+]

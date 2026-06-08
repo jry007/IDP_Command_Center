@@ -1,0 +1,17 @@
+[
+  {
+    "id": "g1",
+    "title": "Example Goal: Build AI Workflow",
+    "category": "Technical",
+    "status": "In Progress",
+    "priority": "High",
+    "due_date": "2026-09-01",
+    "progress": 30,
+    "notes": "Focus on automation and agent orchestration.",
+    "milestones": [
+      {"title": "Research phase", "done": true},
+      {"title": "Prototype", "done": false},
+      {"title": "Deploy", "done": false}
+    ]
+  }
+]
