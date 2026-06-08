@@ -6,9 +6,10 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, date
 from dotenv import load_dotenv
+from pathlib import Path
 from config import NOTION_DB, CASH_FIELDS, STAGE_COLORS, PRIORITY_COLORS
 
-load_dotenv()
+load_dotenv(Path(__file__).parent / ".env")
 
 st.set_page_config(
     page_title="IDP Command Center",
