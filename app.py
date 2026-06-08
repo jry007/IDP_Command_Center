@@ -119,7 +119,7 @@ with st.sidebar:
     if not notion_ok:
         st.warning("No NOTION_TOKEN in .env")
     st.markdown("---")
-    page = st.radio("", [
+    page = st.radio("Navigation", [
         "📊 Dashboard",
         "🏨 HGI Night Audit",
         "💰 Cash Position",
