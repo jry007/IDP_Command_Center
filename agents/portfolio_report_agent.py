@@ -10,7 +10,7 @@ Schedule: Friday 6:00 PM + Monday 8:00 AM (to catch weekend emails) via launchd
 import os, sys, json, re, base64, io, pathlib
 from datetime import date, timedelta
 from dotenv import load_dotenv
-from notion_client import Client
+from agents.notion_helper import db_query, page_create, page_update, find_existing
 
 ROOT = pathlib.Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
@@ -22,7 +22,6 @@ from agents.gmail_auth import (
     get_attachment, get_message_header, iter_attachments
 )
 
-NOTION_TOKEN      = os.getenv("NOTION_TOKEN")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 KIM_EMAIL         = os.getenv("KIM_EMAIL", "")  # Set in .env if known
 
@@ -200,7 +199,6 @@ Report content:
 
 
 def log_to_notion(report: dict, analysis: dict):
-    notion   = Client(auth=NOTION_TOKEN)
     week_end = analysis.get("week_ending", str(date.today()))
     title    = f"Kim's Report — Week Ending {week_end}"
 
@@ -216,15 +214,11 @@ def log_to_notion(report: dict, analysis: dict):
     if week_end:
         props["Week Ending"] = {"date": {"start": week_end}}
 
-    notion.pages.create(
-        parent={"database_id": NOTION_DB["portfolio_reports"]},
-        properties=props
-    )
+    page_create(NOTION_DB["portfolio_reports"], props)
     print(f"  Logged to Portfolio Reports: {title}")
 
 
 def create_action_items(action_items: list, week_ending: str):
-    notion = Client(auth=NOTION_TOKEN)
     for ai in action_items:
         item_text = ai.get("item", "")
         if not item_text:
@@ -240,10 +234,7 @@ def create_action_items(action_items: list, week_ending: str):
         if due:
             props["Due Date"] = {"date": {"start": due}}
 
-        notion.pages.create(
-            parent={"database_id": NOTION_DB["action_items"]},
-            properties=props
-        )
+        page_create(NOTION_DB["action_items"], props)
         print(f"  Action item: {item_text[:70]}")
 
 
@@ -260,12 +251,8 @@ if __name__ == "__main__":
 
         for report in reports:
             # Skip if already logged
-            notion = Client(auth=NOTION_TOKEN)
-            existing = notion.databases.query(
-                database_id=NOTION_DB["portfolio_reports"],
-                filter={"property": "Email Subject", "rich_text": {"equals": report["subject"]}}
-            )
-            if existing["results"]:
+            existing_id = find_existing(NOTION_DB["portfolio_reports"], "Email Subject", report["subject"])
+            if existing_id:
                 print(f"  Already logged: {report['subject']} — skipping")
                 continue
 

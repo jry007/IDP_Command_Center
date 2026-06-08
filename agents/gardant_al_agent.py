@@ -10,7 +10,7 @@ Schedule: Daily at 9:00 AM via launchd
 import os, sys, json, re, base64, io, pathlib
 from datetime import date, timedelta
 from dotenv import load_dotenv
-from notion_client import Client
+from agents.notion_helper import db_query, page_create, page_update, find_existing
 
 ROOT = pathlib.Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
@@ -22,7 +22,6 @@ from agents.gmail_auth import (
     get_attachment, get_message_header, iter_attachments
 )
 
-NOTION_TOKEN      = os.getenv("NOTION_TOKEN")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
 # Gmail search queries to find Gardant reports
@@ -151,39 +150,31 @@ Extract the following and return ONLY valid JSON (no markdown):
 
 def log_to_notion_portfolio(report: dict, analysis: dict):
     """Log the report in the Portfolio Reports / Weekly Portfolio Log DB."""
-    notion = Client(auth=NOTION_TOKEN)
-    title  = f"Gardant: {analysis.get('report_type','Report')} — {analysis.get('period', str(date.today()))}"
+    title = f"Gardant: {analysis.get('report_type','Report')} — {analysis.get('period', str(date.today()))}"
 
-    notion.pages.create(
-        parent={"database_id": NOTION_DB["portfolio_reports"]},
-        properties={
-            "Report Title":  {"title":     [{"text": {"content": title}}]},
-            "From":          {"rich_text": [{"text": {"content": report["sender"]}}]},
-            "Email Subject": {"rich_text": [{"text": {"content": report["subject"]}}]},
-            "Report Body":   {"rich_text": [{"text": {"content": analysis.get("summary","")[:2000]}}]},
-            "Status":        {"select":    {"name": "Received"}},
-            "Received Date": {"date":      {"start": str(date.today())}},
-        }
-    )
+    page_create(NOTION_DB["portfolio_reports"], {
+        "Report Title":  {"title":     [{"text": {"content": title}}]},
+        "From":          {"rich_text": [{"text": {"content": report["sender"]}}]},
+        "Email Subject": {"rich_text": [{"text": {"content": report["subject"]}}]},
+        "Report Body":   {"rich_text": [{"text": {"content": analysis.get("summary","")[:2000]}}]},
+        "Status":        {"select":    {"name": "Received"}},
+        "Received Date": {"date":      {"start": str(date.today())}},
+    })
     print(f"  Logged to Portfolio Reports: {title}")
 
 
 def create_action_items(action_items: list, source: str):
-    notion = Client(auth=NOTION_TOKEN)
     for ai in action_items:
         item_text = ai.get("item", "")
         if not item_text:
             continue
-        notion.pages.create(
-            parent={"database_id": NOTION_DB["action_items"]},
-            properties={
-                "Action Item": {"title":     [{"text": {"content": f"[Gardant] {item_text}"}}]},
-                "Category":    {"select":    {"name": ai.get("category", "Operations")}},
-                "Priority":    {"select":    {"name": ai.get("priority", "Medium")}},
-                "Status":      {"select":    {"name": "Open"}},
-                "Notes":       {"rich_text": [{"text": {"content": f"Source: {source}"}}]},
-            }
-        )
+        page_create(NOTION_DB["action_items"], {
+            "Action Item": {"title":     [{"text": {"content": f"[Gardant] {item_text}"}}]},
+            "Category":    {"select":    {"name": ai.get("category", "Operations")}},
+            "Priority":    {"select":    {"name": ai.get("priority", "Medium")}},
+            "Status":      {"select":    {"name": "Open"}},
+            "Notes":       {"rich_text": [{"text": {"content": f"Source: {source}"}}]},
+        })
         print(f"  Action item created: {item_text[:60]}")
 
 

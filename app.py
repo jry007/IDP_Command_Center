@@ -1,10 +1,10 @@
 import os
+import requests
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, date
-from notion_client import Client
 from dotenv import load_dotenv
 from config import NOTION_DB, CASH_FIELDS, STAGE_COLORS, PRIORITY_COLORS
 
@@ -50,16 +50,62 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ── Notion client ─────────────────────────────────────────────────────────────
+# ── Notion REST helpers ───────────────────────────────────────────────────────
 
-@st.cache_resource
-def get_notion():
+def _notion_headers():
+    return {
+        "Authorization": f"Bearer {os.getenv('NOTION_TOKEN')}",
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json",
+    }
+
+def notion_query(db_id, sorts=None, filters=None):
+    """Query a Notion database via REST API (no SDK dependency)."""
     token = os.getenv("NOTION_TOKEN")
     if not token:
-        return None
-    return Client(auth=token)
+        return []
+    url = f"https://api.notion.com/v1/databases/{db_id}/query"
+    body = {}
+    if sorts:
+        body["sorts"] = sorts
+    if filters:
+        body["filter"] = filters
+    results, cursor = [], None
+    try:
+        while True:
+            if cursor:
+                body["start_cursor"] = cursor
+            resp = requests.post(url, headers=_notion_headers(), json=body, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+            results.extend(data.get("results", []))
+            if not data.get("has_more"):
+                break
+            cursor = data["next_cursor"]
+        return results
+    except Exception as e:
+        st.error(f"Notion error: {e}")
+        return []
 
-# ── Data fetchers ─────────────────────────────────────────────────────────────
+def notion_update(page_id, properties):
+    """Update a Notion page via REST API."""
+    requests.patch(
+        f"https://api.notion.com/v1/pages/{page_id}",
+        headers=_notion_headers(),
+        json={"properties": properties},
+        timeout=15,
+    )
+
+def notion_create(db_id, properties):
+    """Create a new page in a Notion database via REST API."""
+    requests.post(
+        "https://api.notion.com/v1/pages",
+        headers=_notion_headers(),
+        json={"parent": {"database_id": db_id}, "properties": properties},
+        timeout=15,
+    )
+
+# ── Property extractor ────────────────────────────────────────────────────────
 
 def get_prop(page, key, default=None):
     props = page.get("properties", {})
@@ -87,28 +133,7 @@ def get_prop(page, key, default=None):
 
 @st.cache_data(ttl=300)
 def fetch_db(db_id, sorts=None, filters=None):
-    notion = get_notion()
-    if not notion:
-        return []
-    kwargs = {"database_id": db_id}
-    if sorts:
-        kwargs["sorts"] = sorts
-    if filters:
-        kwargs["filter"] = filters
-    try:
-        results, cursor = [], None
-        while True:
-            if cursor:
-                kwargs["start_cursor"] = cursor
-            resp = notion.databases.query(**kwargs)
-            results.extend(resp["results"])
-            if not resp.get("has_more"):
-                break
-            cursor = resp["next_cursor"]
-        return results
-    except Exception as e:
-        st.error(f"Notion error: {e}")
-        return []
+    return notion_query(db_id, sorts=sorts, filters=filters)
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
@@ -498,13 +523,10 @@ elif page == "✅ Action Items":
             if notes:
                 st.caption(notes)
             if st.button("Mark Done", key=f"done_{item['id']}"):
-                notion = get_notion()
-                if notion:
-                    notion.pages.update(item["id"],
-                        properties={"Status":{"select":{"name":"Done"}}})
-                    st.cache_data.clear()
-                    st.success("Marked done!")
-                    st.rerun()
+                notion_update(item["id"], {"Status": {"select": {"name": "Done"}}})
+                st.cache_data.clear()
+                st.success("Marked done!")
+                st.rerun()
 
 # ── Page: Portfolio Reports ───────────────────────────────────────────────────
 
@@ -548,12 +570,10 @@ elif page == "📁 Portfolio Reports":
                     st.text_area("Report Body", body, height=150, key=rep["id"], disabled=True)
                 if not replied:
                     if st.button("Mark Reply Sent", key=f"reply_{rep['id']}"):
-                        notion = get_notion()
-                        if notion:
-                            notion.pages.update(rep["id"], properties={
-                                "Reply Sent": {"checkbox": True},
-                                "Status":     {"select": {"name": "Replied"}},
-                                "Reply Date": {"date":    {"start": str(date.today())}},
-                            })
-                            st.cache_data.clear()
-                            st.rerun()
+                        notion_update(rep["id"], {
+                            "Reply Sent": {"checkbox": True},
+                            "Status":     {"select": {"name": "Replied"}},
+                            "Reply Date": {"date":   {"start": str(date.today())}},
+                        })
+                        st.cache_data.clear()
+                        st.rerun()

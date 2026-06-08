@@ -8,7 +8,7 @@ Schedule: 8:00 AM daily via launchd
 import os, sys, json, pathlib
 from datetime import date
 from dotenv import load_dotenv
-from notion_client import Client
+from agents.notion_helper import db_query, page_create, page_update, find_existing
 
 ROOT = pathlib.Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
@@ -18,7 +18,6 @@ from config import NOTION_DB, CASH_FIELDS, XERO_ORG_MAP
 from agents.xero_auth import ensure_valid_token, get_tenants
 
 TENANT_PATH = pathlib.Path(__file__).parent / "xero_tenants.json"
-NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 
 
 def get_bank_balance(access_token: str, tenant_id: str, org_name: str) -> float:
@@ -86,14 +85,10 @@ def fetch_all_balances() -> dict:
 
 
 def write_to_notion(balances: dict):
-    notion = Client(auth=NOTION_TOKEN)
-    today  = str(date.today())
-    total  = round(sum(balances.values()), 2)
+    today = str(date.today())
+    total = round(sum(balances.values()), 2)
 
-    existing = notion.databases.query(
-        database_id=NOTION_DB["cash_position"],
-        filter={"property": "Date", "title": {"equals": today}}
-    )
+    existing_id = find_existing(NOTION_DB["cash_position"], "Date", today)
 
     props = {
         "Date":       {"title":  [{"text": {"content": today}}]},
@@ -101,14 +96,11 @@ def write_to_notion(balances: dict):
         **{k: {"number": v} for k, v in balances.items()},
     }
 
-    if existing["results"]:
-        notion.pages.update(existing["results"][0]["id"], properties=props)
+    if existing_id:
+        page_update(existing_id, props)
         print(f"Updated cash position for {today} — Total: ${total:,.2f}")
     else:
-        notion.pages.create(
-            parent={"database_id": NOTION_DB["cash_position"]},
-            properties=props
-        )
+        page_create(NOTION_DB["cash_position"], props)
         print(f"Created cash position for {today} — Total: ${total:,.2f}")
 
 

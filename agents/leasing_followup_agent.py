@@ -10,7 +10,7 @@ Schedule: Monday 8:30 AM via launchd
 import os, sys, json, re, io, pathlib
 from datetime import date, timedelta
 from dotenv import load_dotenv
-from notion_client import Client
+from agents.notion_helper import db_query, page_create, page_update, find_existing
 
 ROOT = pathlib.Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
@@ -22,7 +22,6 @@ from agents.gmail_auth import (
     get_attachment, get_message_header, iter_attachments
 )
 
-NOTION_TOKEN      = os.getenv("NOTION_TOKEN")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
 LEASING_QUERIES = [
@@ -153,21 +152,17 @@ Return ONLY valid JSON (no markdown):
 
 
 def create_action_items(action_items: list, source: str):
-    notion = Client(auth=NOTION_TOKEN)
     for ai in action_items:
         item_text = ai.get("item", "")
         if not item_text:
             continue
-        notion.pages.create(
-            parent={"database_id": NOTION_DB["action_items"]},
-            properties={
-                "Action Item": {"title":     [{"text": {"content": f"[Leasing] {item_text}"}}]},
-                "Category":    {"select":    {"name": ai.get("category", "Operations")}},
-                "Priority":    {"select":    {"name": ai.get("priority", "Medium")}},
-                "Status":      {"select":    {"name": "Open"}},
-                "Notes":       {"rich_text": [{"text": {"content": f"Source: {source}"}}]},
-            }
-        )
+        page_create(NOTION_DB["action_items"], {
+            "Action Item": {"title":     [{"text": {"content": f"[Leasing] {item_text}"}}]},
+            "Category":    {"select":    {"name": ai.get("category", "Operations")}},
+            "Priority":    {"select":    {"name": ai.get("priority", "Medium")}},
+            "Status":      {"select":    {"name": "Open"}},
+            "Notes":       {"rich_text": [{"text": {"content": f"Source: {source}"}}]},
+        })
         print(f"  Action item: {item_text[:70]}")
 
 

@@ -9,7 +9,7 @@ Schedule: 7:45 AM daily via launchd
 import os, sys, json, re, base64, pathlib
 from datetime import date, timedelta
 from dotenv import load_dotenv
-from notion_client import Client
+from agents.notion_helper import db_query, page_create, page_update, find_existing
 
 ROOT = pathlib.Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
@@ -18,7 +18,6 @@ load_dotenv(ROOT / ".env")
 from config import NOTION_DB
 from agents.gmail_auth import get_gmail_service, search_messages, get_message, get_attachment, get_message_header, iter_attachments
 
-NOTION_TOKEN      = os.getenv("NOTION_TOKEN")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
 
@@ -100,13 +99,9 @@ Use null for any metric you cannot find. Do not include any text outside the JSO
 
 
 def write_to_notion(metrics: dict):
-    notion = Client(auth=NOTION_TOKEN)
     report_date = metrics.get("date", str(date.today() - timedelta(days=1)))
 
-    existing = notion.databases.query(
-        database_id=NOTION_DB["hgi_daily_metrics"],
-        filter={"property": "Date", "title": {"equals": report_date}}
-    )
+    existing_id = find_existing(NOTION_DB["hgi_daily_metrics"], "Date", report_date)
 
     def num(key):
         v = metrics.get(key)
@@ -124,14 +119,11 @@ def write_to_notion(metrics: dict):
         "Notes":         {"rich_text": [{"text": {"content": metrics.get("notes") or ""}}]},
     }
 
-    if existing["results"]:
-        notion.pages.update(existing["results"][0]["id"], properties=props)
+    if existing_id:
+        page_update(existing_id, props)
         print(f"Updated HGI record for {report_date}")
     else:
-        notion.pages.create(
-            parent={"database_id": NOTION_DB["hgi_daily_metrics"]},
-            properties=props
-        )
+        page_create(NOTION_DB["hgi_daily_metrics"], props)
 
     occ = (metrics.get("occupancy_pct") or 0) * 100
     adr = metrics.get("adr") or 0
