@@ -4,7 +4,20 @@
       "Bash(pip3 show *)",
       "Bash(git init *)",
       "Bash(git add *)",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "Bash(pip3 install *)",
+      "Bash(python3 -m streamlit run app.py)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:8501)",
+      "Bash(python3 -m streamlit run /Users/yostenterprises/IDP_Command_Center/app.py --server.headless true)",
+      "Bash(pkill -f \"streamlit run\")",
+      "Bash(gh auth *)",
+      "Bash(ls ~/.ssh/id_ed25519.pub 2>/dev/null && echo \"exists\" || echo \"none\")",
+      "Bash(ssh-keygen -t ed25519 -C \"yostenterprises\" -f ~/.ssh/id_ed25519 -N \"\")",
+      "Bash(git remote *)",
+      "Bash(ssh -T git@github.com)",
+      "Bash(ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null && ssh -T git@github.com 2>&1)",
+      "Bash(git push *)",
+      "mcp__80b272cb-f5ef-4f3e-a180-248771f4b42a__notion-fetch"
     ]
   }
 }

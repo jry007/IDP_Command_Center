@@ -7,3 +7,8 @@ venv/
 *.egg-info/
 dist/
 build/
+logs/
+.env
+credentials/
+agents/xero_tokens.json
+agents/gmail_token.json
