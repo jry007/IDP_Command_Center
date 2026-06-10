@@ -2,8 +2,6 @@ import os
 import requests
 import streamlit as st
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
 from datetime import datetime, date
 from dotenv import load_dotenv
 from pathlib import Path
@@ -202,14 +200,8 @@ if page == "📊 Dashboard":
             cash_data = [(f, get_prop(latest_cash, f, 0) or 0) for f in CASH_FIELDS]
             cash_data = [(k, v) for k, v in cash_data if v > 0]
             if cash_data:
-                df_cash = pd.DataFrame(cash_data, columns=["Entity","Balance"])
-                fig = px.bar(df_cash, x="Balance", y="Entity", orientation="h",
-                             color="Balance", color_continuous_scale="Purples")
-                fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                                  font_color="#94a3b8", margin=dict(t=10,b=10),
-                                  coloraxis_showscale=False, height=300)
-                fig.update_xaxes(tickprefix="$", tickformat=",.0f")
-                st.plotly_chart(fig, use_container_width=True)
+                df_cash = pd.DataFrame(cash_data, columns=["Entity","Balance"]).set_index("Entity")
+                st.bar_chart(df_cash, height=300)
         else:
             st.info("No cash position data yet.")
 
@@ -217,15 +209,8 @@ if page == "📊 Dashboard":
         st.markdown('<div class="section-header">📋 Deal Pipeline by Stage</div>', unsafe_allow_html=True)
         if deals:
             stages = [get_prop(d,"Stage","Unknown") for d in deals]
-            df_s = pd.Series(stages).value_counts().reset_index()
-            df_s.columns = ["Stage","Count"]
-            colors = [STAGE_COLORS.get(s,"#6b7280") for s in df_s["Stage"]]
-            fig = px.bar(df_s, x="Stage", y="Count", color="Stage",
-                         color_discrete_map=STAGE_COLORS)
-            fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                              font_color="#94a3b8", margin=dict(t=10,b=10),
-                              showlegend=False, height=300)
-            st.plotly_chart(fig, use_container_width=True)
+            df_s = pd.Series(stages).value_counts().rename_axis("Stage").to_frame("Count")
+            st.bar_chart(df_s, height=300)
         else:
             st.info("No deals yet.")
 
@@ -243,14 +228,8 @@ if page == "📊 Dashboard":
                     "F&B Revenue":   get_prop(r, "F&B Revenue",  0) or 0,
                     "Total Revenue": get_prop(r, "Total Revenue",0) or 0,
                 })
-            df_hgi = pd.DataFrame(hgi_data).sort_values("Date")
-            fig = px.line(df_hgi, x="Date", y=["Room Revenue","F&B Revenue"],
-                          color_discrete_map={"Room Revenue":"#a78bfa","F&B Revenue":"#34d399"})
-            fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                              font_color="#94a3b8", margin=dict(t=10,b=10), height=300,
-                              legend=dict(orientation="h", y=-0.2))
-            fig.update_yaxes(tickprefix="$", tickformat=",.0f")
-            st.plotly_chart(fig, use_container_width=True)
+            df_hgi = pd.DataFrame(hgi_data).sort_values("Date").set_index("Date")
+            st.line_chart(df_hgi[["Room Revenue","F&B Revenue"]], height=300)
         else:
             st.info("Not enough HGI data for trend.")
 
@@ -341,21 +320,11 @@ elif page == "🏨 HGI Night Audit":
 
         with col_a:
             st.subheader("Occupancy % — 30 Days")
-            fig = px.line(df_raw, x="Date", y="Occupancy", markers=True,
-                          color_discrete_sequence=["#a78bfa"])
-            fig.update_layout(paper_bgcolor="rgba(0,0,0,0)",plot_bgcolor="rgba(0,0,0,0)",
-                              font_color="#94a3b8",margin=dict(t=10,b=10))
-            fig.update_yaxes(ticksuffix="%")
-            st.plotly_chart(fig, use_container_width=True)
+            st.line_chart(df_raw.set_index("Date")[["Occupancy"]])
 
         with col_b:
             st.subheader("ADR vs RevPAR — 30 Days")
-            fig = px.line(df_raw, x="Date", y=["ADR","RevPAR"], markers=True,
-                          color_discrete_map={"ADR":"#34d399","RevPAR":"#f59e0b"})
-            fig.update_layout(paper_bgcolor="rgba(0,0,0,0)",plot_bgcolor="rgba(0,0,0,0)",
-                              font_color="#94a3b8",margin=dict(t=10,b=10))
-            fig.update_yaxes(tickprefix="$")
-            st.plotly_chart(fig, use_container_width=True)
+            st.line_chart(df_raw.set_index("Date")[["ADR","RevPAR"]])
 
 # ── Page: Cash Position ───────────────────────────────────────────────────────
 
@@ -387,23 +356,12 @@ elif page == "💰 Cash Position":
         col_a, col_b = st.columns(2)
         with col_a:
             st.subheader("Balance by Entity")
-            fig = px.bar(df_b.sort_values("Balance",ascending=True),
-                         x="Balance", y="Entity", orientation="h",
-                         color="Balance", color_continuous_scale="Purples")
-            fig.update_layout(paper_bgcolor="rgba(0,0,0,0)",plot_bgcolor="rgba(0,0,0,0)",
-                              font_color="#94a3b8",margin=dict(t=10,b=10),
-                              coloraxis_showscale=False)
-            fig.update_xaxes(tickprefix="$",tickformat=",.0f")
-            st.plotly_chart(fig, use_container_width=True)
+            st.bar_chart(df_b.set_index("Entity").sort_values("Balance"))
 
         with col_b:
             st.subheader("Share of Total")
-            df_pie = df_b[df_b["Balance"] > 0]
-            fig = px.pie(df_pie, names="Entity", values="Balance",
-                         color_discrete_sequence=px.colors.sequential.Purples_r, hole=0.4)
-            fig.update_layout(paper_bgcolor="rgba(0,0,0,0)",font_color="#94a3b8",
-                              margin=dict(t=10,b=10))
-            st.plotly_chart(fig, use_container_width=True)
+            df_pie = df_b[df_b["Balance"] > 0].set_index("Entity")
+            st.bar_chart(df_pie)
 
         # Entity table
         st.subheader("Entity Detail")
@@ -415,13 +373,8 @@ elif page == "💰 Cash Position":
             st.subheader("Total Cash — Historical")
             hist = [{"Date": get_prop(r,"Date"), "Total Cash": get_prop(r,"Total Cash",0) or 0}
                     for r in rows[:60]]
-            df_hist = pd.DataFrame(hist).sort_values("Date")
-            fig = px.area(df_hist, x="Date", y="Total Cash",
-                          color_discrete_sequence=["#a78bfa"])
-            fig.update_layout(paper_bgcolor="rgba(0,0,0,0)",plot_bgcolor="rgba(0,0,0,0)",
-                              font_color="#94a3b8",margin=dict(t=10,b=10))
-            fig.update_yaxes(tickprefix="$",tickformat=",.0f")
-            st.plotly_chart(fig, use_container_width=True)
+            df_hist = pd.DataFrame(hist).sort_values("Date").set_index("Date")
+            st.area_chart(df_hist[["Total Cash"]])
 
 # ── Page: Deal Pipeline ───────────────────────────────────────────────────────
 
